@@ -1,0 +1,15 @@
+{
+  "name": "whatsapp-qa-agent",
+  "version": "1.0.0",
+  "description": "Real-time WhatsApp Q&A agent — watches a chat and delivers Claude-generated answers within seconds",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "dotenv": "^16.4.5",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.26.0"
+  }
+}
