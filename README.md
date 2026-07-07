@@ -73,6 +73,21 @@ replies `pong`.
 
 To run it 24/7 on a server instead of a laptop, see [DEPLOY.md](DEPLOY.md).
 
+## Measuring accuracy
+
+`eval.js` benchmarks the agent's prompt + model against questions with known
+answers, using a second Claude call as the grader:
+
+```
+node eval.js                    # evaluate the default model (Haiku 4.5)
+node eval.js claude-opus-4-8    # compare against a stronger model
+```
+
+Add your own question set as `questions.json` (same format as
+`questions.example.json`) — real questions from the chat you watch make the
+best benchmark. The script reports per-question pass/fail, overall accuracy,
+and average latency.
+
 ## Notes and disclaimers
 
 - This project uses an unofficial WhatsApp library and is not affiliated
