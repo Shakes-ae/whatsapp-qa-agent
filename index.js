@@ -39,9 +39,23 @@ client.on("qr", (qr) => {
   qrcode.generate(qr, { small: true });
 });
 
+// Right after a fresh link, WhatsApp may still be syncing chats to this
+// device and getChats() can throw — retry with a delay before giving up.
+async function getChatsWithRetry(retries = 6, delayMs = 5000) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await client.getChats();
+    } catch (err) {
+      console.warn(`getChats failed (attempt ${attempt}/${retries}): ${err.message}`);
+      if (attempt >= retries) throw err;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
 client.on("ready", async () => {
   console.log("Connected to WhatsApp.");
-  const chats = await client.getChats();
+  const chats = await getChatsWithRetry();
   const groups = chats.filter((c) => c.isGroup);
 
   for (const group of groups) {
@@ -188,6 +202,12 @@ client.on("message", async (msg) => {
 
 client.on("disconnected", (reason) => {
   console.error("WhatsApp disconnected:", reason);
+  process.exit(1);
+});
+
+// Exit cleanly on unexpected async errors so the process manager restarts us
+process.on("unhandledRejection", (err) => {
+  console.error("Unhandled error:", (err && err.message) || err);
   process.exit(1);
 });
 
