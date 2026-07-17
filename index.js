@@ -32,7 +32,8 @@ const client = new Client({
   puppeteer: { headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] },
 });
 
-const watchedGroups = new Map(); // group chat id -> group name
+const watchedGroups = new Map(); // group chat id -> group name (confirmed matches)
+const ignoredGroups = new Set(); // group chat ids checked and not matched
 
 client.on("qr", (qr) => {
   console.log("\nScan this QR code with the agent phone (WhatsApp > Linked devices > Link a device):\n");
@@ -55,33 +56,44 @@ async function getChatsWithRetry(retries = 6, delayMs = 5000) {
 
 client.on("ready", async () => {
   console.log("Connected to WhatsApp.");
-  const chats = await getChatsWithRetry();
-  const groups = chats.filter((c) => c.isGroup);
+  try {
+    // Preferred path: list groups up front so typos in .env surface immediately
+    const chats = await getChatsWithRetry(2, 3000);
+    const groups = chats.filter((c) => c.isGroup);
 
-  for (const group of groups) {
-    if (watchTargets.some((t) => group.name.toLowerCase().includes(t))) {
-      watchedGroups.set(group.id._serialized, group.name);
+    for (const group of groups) {
+      if (watchTargets.some((t) => group.name.toLowerCase().includes(t))) {
+        watchedGroups.set(group.id._serialized, group.name);
+      }
     }
-  }
 
-  const unmatched = watchTargets.filter(
-    (t) => !groups.some((g) => g.name.toLowerCase().includes(t)),
-  );
-  for (const t of unmatched) {
-    console.warn(`Warning: no group matching "${t}" found.`);
-  }
+    const unmatched = watchTargets.filter(
+      (t) => !groups.some((g) => g.name.toLowerCase().includes(t)),
+    );
+    for (const t of unmatched) {
+      console.warn(`Warning: no group matching "${t}" found.`);
+    }
 
-  if (watchedGroups.size > 0) {
-    const names = [...watchedGroups.values()];
-    names.forEach((n) => console.log(`Watching group: "${n}"`));
+    if (watchedGroups.size > 0) {
+      const names = [...watchedGroups.values()];
+      names.forEach((n) => console.log(`Watching group: "${n}"`));
+      await client.sendMessage(
+        ownerChatId,
+        `🤖 Q&A agent online. Watching: ${names.map((n) => `"${n}"`).join(", ")}.`,
+      );
+    } else {
+      console.error(`No groups matching "${WATCH_GROUP_NAMES}" found. Groups visible to this account:`);
+      groups.forEach((c) => console.error(`  - ${c.name}`));
+      console.error("Fix WATCH_GROUP_NAMES in .env and restart.");
+    }
+  } catch {
+    // getChats() is broken on some WhatsApp Web versions (wwebjs issue #5733).
+    // Fall back to detecting groups from incoming messages instead.
+    console.warn("Chat list unavailable — groups will be recognized from incoming messages.");
     await client.sendMessage(
       ownerChatId,
-      `🤖 Q&A agent online. Watching: ${names.map((n) => `"${n}"`).join(", ")}.`,
+      `🤖 Q&A agent online. Watching for questions in groups matching: ${watchTargets.join(", ")}.`,
     );
-  } else {
-    console.error(`No groups matching "${WATCH_GROUP_NAMES}" found. Groups visible to this account:`);
-    groups.forEach((c) => console.error(`  - ${c.name}`));
-    console.error("Fix WATCH_GROUP_NAMES in .env and restart.");
   }
 });
 
@@ -124,8 +136,25 @@ client.on("message", async (msg) => {
     }
   }
 
-  const groupName = watchedGroups.get(msg.from);
-  if (!groupName) return;
+  // Resolve the group lazily if startup couldn't list chats
+  let groupName = watchedGroups.get(msg.from);
+  if (!groupName) {
+    if (!msg.from.endsWith("@g.us") || ignoredGroups.has(msg.from)) return;
+    try {
+      const chat = await msg.getChat();
+      if (chat.name && watchTargets.some((t) => chat.name.toLowerCase().includes(t))) {
+        watchedGroups.set(msg.from, chat.name);
+        groupName = chat.name;
+        console.log(`Watching group: "${chat.name}"`);
+      } else {
+        ignoredGroups.add(msg.from);
+        return;
+      }
+    } catch (err) {
+      console.warn(`Could not resolve chat ${msg.from}: ${err.message}`);
+      return;
+    }
+  }
 
   const text = msg.body.trim();
   const hasMedia = msg.hasMedia;
