@@ -55,7 +55,7 @@ out-of-band to the configured recipient.
 
 4. **Configure**: copy `.env.example` to `.env` and fill in:
    - `ANTHROPIC_API_KEY` — your API key
-   - `WATCH_GROUP_NAME` — name of the chat to watch (partial match is fine)
+   - `WATCH_GROUP_NAMES` — chats to watch, comma-separated (partial match is fine)
    - `OWNER_NUMBER` — the recipient's WhatsApp number, digits only with
      country code
 
@@ -72,6 +72,18 @@ Health check: send `ping` to the agent's number from any chat — it
 replies `pong`.
 
 To run it 24/7 on a server instead of a laptop, see [DEPLOY.md](DEPLOY.md).
+
+## Teaching it corrections
+
+The agent learns from its mistakes. From the recipient's phone:
+
+- **Fix a wrong answer**: reply to the agent's ⚽ answer DM with
+  `correct: <right answer>`
+- **Teach proactively**: DM the agent `learn: <question> = <answer>`
+
+Corrections persist in `corrections.json`. When a saved question repeats
+exactly, the agent answers instantly from memory (tagged 📌, no API call);
+reworded repeats are handled by injecting corrections into Claude's prompt.
 
 ## Measuring accuracy
 
