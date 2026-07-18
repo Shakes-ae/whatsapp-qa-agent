@@ -15,8 +15,7 @@ phone"?
 - **Multimodal** — handles text questions and image-based questions
   (photos are sent directly to Claude's vision capability, no separate
   OCR step)
-- **Event-driven** — messages arrive over the live WhatsApp Web session,
-  no polling
+- **Event-driven** — Baileys socket listener, no polling, no headless browser
 - **Configurable routing** — watch any chat, deliver to any recipient
 - **Domain-tuned prompting** — currently configured for football Q&A
   (tested on Premier League and World Cup question sets); the system
@@ -25,9 +24,9 @@ phone"?
 ## Architecture
 
 ```
-WhatsApp chat ──> whatsapp-web.js listener ──> question filter ──> Claude API
-                                                                        │
-              recipient DM  <── notification relay <────────────────────┘
+WhatsApp chat ──> Baileys listener ──> question filter ──> Claude API
+                                                                │
+              recipient DM  <── notification relay <────────────┘
 ```
 
 The listener stays read-only in the watched chat — answers are delivered
@@ -35,8 +34,8 @@ out-of-band to the configured recipient.
 
 ## Stack
 
-- [whatsapp-web.js](https://github.com/pedroslopez/whatsapp-web.js) —
-  WhatsApp Web client (Node.js, headless Chromium under the hood)
+- [Baileys](https://github.com/WhiskeySockets/Baileys) — WhatsApp Web
+  protocol client (Node.js, WebSocket-based — no browser)
 - Anthropic Claude API (Haiku 4.5) — fast multimodal inference
 - Node.js
 
@@ -48,8 +47,6 @@ out-of-band to the configured recipient.
    ```
    npm install
    ```
-   The first install downloads a bundled Chromium (~200 MB) — that's
-   normal; whatsapp-web.js drives a hidden browser.
 
 3. **Get an Anthropic API key** at https://console.anthropic.com/settings/keys
 
@@ -65,7 +62,7 @@ out-of-band to the configured recipient.
    ```
    A QR code appears in the terminal — scan it with the agent's phone
    (WhatsApp → Settings → Linked devices → Link a device). The session is
-   saved in `./session`, so you only scan once.
+   saved in `./baileys-session`, so you only scan once.
 
 The agent DMs the recipient a startup confirmation when it's watching.
 Health check: send `ping` to the agent's number from any chat — it
