@@ -27,14 +27,18 @@ const watchTargets = WATCH_GROUP_NAMES.split(",")
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY, timeout: 8000, maxRetries: 0 });
 const ownerDigits = OWNER_NUMBER.replace(/\D/g, "");
 const ownerJid = `${ownerDigits}@s.whatsapp.net`;
+let ownerLidUser = null; // owner's privacy-LID user id, resolved at connection
+let ownerSendJid = ownerJid; // where owner DMs are delivered (upgraded to LID once known)
 
 // WhatsApp may deliver DMs under a privacy LID instead of the phone-number JID —
-// check every identity field the message carries.
+// check every identity field the message carries, plus the resolved owner LID.
 function isOwner(m, jid) {
   const candidates = [jid, m.key.senderPn, m.key.participant, m.key.participantPn];
-  return candidates.some(
-    (c) => typeof c === "string" && c.split("@")[0].split(":")[0] === ownerDigits,
-  );
+  return candidates.some((c) => {
+    if (typeof c !== "string") return false;
+    const user = c.split("@")[0].split(":")[0];
+    return user === ownerDigits || (ownerLidUser && user === ownerLidUser);
+  });
 }
 
 const logger = pino({ level: "silent" });
@@ -69,13 +73,13 @@ async function handleOwnerCommand(sock, m, text) {
   const lower = text.toLowerCase();
 
   if (lower === "ping") {
-    await sock.sendMessage(ownerJid, { text: "pong 🏓" });
+    await sock.sendMessage(ownerSendJid, { text: "pong 🏓" });
     return;
   }
 
   if (["stop", "pause", "off"].includes(lower)) {
     paused = true;
-    await sock.sendMessage(ownerJid, {
+    await sock.sendMessage(ownerSendJid, {
       text: "⏸️ Paused — no more answer DMs. I'm still watching the groups and learning from revealed answers. Send *start* to resume.",
     });
     return;
@@ -83,13 +87,13 @@ async function handleOwnerCommand(sock, m, text) {
 
   if (["start", "resume", "on"].includes(lower)) {
     paused = false;
-    await sock.sendMessage(ownerJid, { text: "▶️ Resumed — answers are back on." });
+    await sock.sendMessage(ownerSendJid, { text: "▶️ Resumed — answers are back on." });
     return;
   }
 
   if (lower === "status") {
     const groups = [...groupNames.values()];
-    await sock.sendMessage(ownerJid, {
+    await sock.sendMessage(ownerSendJid, {
       text:
         `${paused ? "⏸️ Paused" : "▶️ Running"}\n` +
         `Groups: ${groups.length ? groups.join(", ") : `waiting for messages matching: ${watchTargets.join(", ")}`}\n` +
@@ -106,11 +110,11 @@ async function handleOwnerCommand(sock, m, text) {
     const match = quotedText.match(/\*Q:\* (.+)/);
     if (match && answer) {
       addCorrection(match[1].trim(), answer);
-      await sock.sendMessage(ownerJid, {
+      await sock.sendMessage(ownerSendJid, {
         text: `📌 Noted. I'll answer "${answer}" next time. (${count()} corrections saved)`,
       });
     } else {
-      await sock.sendMessage(ownerJid, {
+      await sock.sendMessage(ownerSendJid, {
         text: "To correct me, reply to one of my ⚽ answer messages with:\ncorrect: <right answer>",
       });
     }
@@ -123,9 +127,9 @@ async function handleOwnerCommand(sock, m, text) {
     const eq = rest.indexOf("=");
     if (eq > 0) {
       addCorrection(rest.slice(0, eq).trim(), rest.slice(eq + 1).trim());
-      await sock.sendMessage(ownerJid, { text: `📌 Learned. (${count()} corrections saved)` });
+      await sock.sendMessage(ownerSendJid, { text: `📌 Learned. (${count()} corrections saved)` });
     } else {
-      await sock.sendMessage(ownerJid, { text: "Format: learn: <question> = <answer>" });
+      await sock.sendMessage(ownerSendJid, { text: "Format: learn: <question> = <answer>" });
     }
   }
 }
@@ -175,7 +179,7 @@ async function handleGroupMessage(sock, m, jid) {
       const agrees = bot && (normLite(bot).includes(normLite(winner)) || normLite(winner).includes(normLite(bot)));
       console.log(`  [learned] "${state.lastQ.text.slice(0, 60)}" -> "${winner.slice(0, 60)}"`);
       if (bot && !agrees) {
-        await sock.sendMessage(ownerJid, {
+        await sock.sendMessage(ownerSendJid, {
           text: `📚 The group confirmed a different answer:\n*Q:* ${state.lastQ.text.slice(0, 120)}\n*Right answer:* ${winner}\n_Saved — I'll use it next time._`,
         });
       }
@@ -202,7 +206,7 @@ async function handleGroupMessage(sock, m, jid) {
   const known = text ? findCorrection(text) : null;
   if (known) {
     state.lastQ = { text, ts: started, botAnswer: known.answer };
-    await sock.sendMessage(ownerJid, {
+    await sock.sendMessage(ownerSendJid, {
       text: `⚽ _${groupName}_\n*Q:* ${text.slice(0, 120)}\n\n✅ *A:* ${known.answer} 📌`,
     });
     console.log(`  -> answered from corrections (${((Date.now() - started) / 1000).toFixed(1)}s)`);
@@ -252,18 +256,18 @@ async function handleGroupMessage(sock, m, jid) {
     state.lastQ = { text: text || "(image question)", ts: started, botAnswer: answer };
 
     const lateTag = Date.now() - started > 10_000 ? " ⏰ _(late)_" : "";
-    await sock.sendMessage(ownerJid, {
+    await sock.sendMessage(ownerSendJid, {
       text: `⚽ _${groupName}_\n*Q:* ${text.slice(0, 120) || "(image question)"}\n\n✅ *A:* ${answer}${lateTag}`,
     });
     console.log(`  -> answered in ${elapsed}s: ${answer.slice(0, 80)}`);
   } catch (err) {
     console.error("  -> error:", err.message);
     if (err instanceof Anthropic.APIConnectionTimeoutError) {
-      await sock.sendMessage(ownerJid, { text: "⚠️ Claude took too long on that one — answer skipped." });
+      await sock.sendMessage(ownerSendJid, { text: "⚠️ Claude took too long on that one — answer skipped." });
     } else if (err instanceof Anthropic.RateLimitError) {
-      await sock.sendMessage(ownerJid, { text: "⚠️ Rate limited by the Claude API — answer skipped." });
+      await sock.sendMessage(ownerSendJid, { text: "⚠️ Rate limited by the Claude API — answer skipped." });
     } else if (err instanceof Anthropic.AuthenticationError) {
-      await sock.sendMessage(ownerJid, { text: "⚠️ Invalid ANTHROPIC_API_KEY — check your .env." });
+      await sock.sendMessage(ownerSendJid, { text: "⚠️ Invalid ANTHROPIC_API_KEY — check your .env." });
     }
   }
 }
@@ -283,9 +287,17 @@ async function handleMessage(sock, m) {
   }
 
   // DMs: log identities so owner-matching issues are visible in pm2 logs
-  console.log(`[dm] from=${jid} senderPn=${m.key.senderPn || "-"} text="${extractText(m).slice(0, 40)}"`);
+  let resolvedPn = m.key.senderPn || "";
+  if (!resolvedPn && jid.endsWith("@lid")) {
+    try {
+      resolvedPn = (await sock.signalRepository.lidMapping.getPNForLID(jid)) || "";
+    } catch {}
+  }
+  console.log(`[dm] from=${jid} pn=${resolvedPn || "-"} text="${extractText(m).slice(0, 40)}"`);
 
-  if (isOwner(m, jid)) {
+  if (isOwner(m, jid) || (resolvedPn && resolvedPn.split("@")[0].split(":")[0] === ownerDigits)) {
+    // Deliver future owner DMs to the chat the owner actually writes from
+    ownerSendJid = jid;
     await handleOwnerCommand(sock, m, extractText(m));
     return;
   }
@@ -316,11 +328,28 @@ async function start() {
 
     if (connection === "open") {
       console.log("Connected to WhatsApp.");
-      sock
-        .sendMessage(ownerJid, {
-          text: `🤖 Q&A agent online. Watching for questions in groups matching: ${watchTargets.join(", ")}.`,
-        })
-        .catch((err) => console.warn("Could not send online DM:", err.message));
+      (async () => {
+        try {
+          const lid = await sock.signalRepository.lidMapping.getLIDForPN(ownerJid);
+          if (lid) {
+            ownerLidUser = lid.split("@")[0].split(":")[0];
+            ownerSendJid = `${ownerLidUser}@lid`;
+            console.log(`Owner ${ownerJid} resolved to LID ${ownerSendJid}`);
+          } else {
+            console.log(`Owner LID not resolved yet — using ${ownerJid}`);
+          }
+        } catch (err) {
+          console.warn("Owner LID lookup failed:", err.message);
+        }
+        try {
+          await sock.sendMessage(ownerSendJid, {
+            text: `🤖 Q&A agent online. Watching for questions in groups matching: ${watchTargets.join(", ")}.`,
+          });
+          console.log(`Online DM sent to ${ownerSendJid}`);
+        } catch (err) {
+          console.warn("Could not send online DM:", err.message);
+        }
+      })();
     }
 
     if (connection === "close") {
