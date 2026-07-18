@@ -25,7 +25,17 @@ const watchTargets = WATCH_GROUP_NAMES.split(",")
 
 // Hard latency budget: fail fast instead of delivering a useless late answer.
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY, timeout: 8000, maxRetries: 0 });
-const ownerJid = `${OWNER_NUMBER.replace(/\D/g, "")}@s.whatsapp.net`;
+const ownerDigits = OWNER_NUMBER.replace(/\D/g, "");
+const ownerJid = `${ownerDigits}@s.whatsapp.net`;
+
+// WhatsApp may deliver DMs under a privacy LID instead of the phone-number JID —
+// check every identity field the message carries.
+function isOwner(m, jid) {
+  const candidates = [jid, m.key.senderPn, m.key.participant, m.key.participantPn];
+  return candidates.some(
+    (c) => typeof c === "string" && c.split("@")[0].split(":")[0] === ownerDigits,
+  );
+}
 
 const logger = pino({ level: "silent" });
 const groupNames = new Map(); // group jid -> subject (confirmed matches)
@@ -267,13 +277,16 @@ async function handleMessage(sock, m) {
   const ts = Number(m.messageTimestamp) * 1000;
   if (ts && Date.now() - ts > 2 * 60_000) return;
 
-  if (jid === ownerJid) {
-    await handleOwnerCommand(sock, m, extractText(m));
+  if (jid.endsWith("@g.us")) {
+    await handleGroupMessage(sock, m, jid);
     return;
   }
 
-  if (jid.endsWith("@g.us")) {
-    await handleGroupMessage(sock, m, jid);
+  // DMs: log identities so owner-matching issues are visible in pm2 logs
+  console.log(`[dm] from=${jid} senderPn=${m.key.senderPn || "-"} text="${extractText(m).slice(0, 40)}"`);
+
+  if (isOwner(m, jid)) {
+    await handleOwnerCommand(sock, m, extractText(m));
     return;
   }
 
