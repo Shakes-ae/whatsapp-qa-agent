@@ -1,6 +1,6 @@
 # WhatsApp Real-Time Q&A Agent
 
-A low-latency agent that listens to a WhatsApp chat, routes incoming
+A low-latency agent that listens to WhatsApp group chats, routes incoming
 questions to Claude, and delivers answers to a designated recipient —
 typically in 3 to 6 seconds end-to-end.
 
@@ -16,30 +16,56 @@ phone"?
   (photos are sent directly to Claude's vision capability, no separate
   OCR step)
 - **Event-driven** — Baileys socket listener, no polling, no headless browser
-- **Configurable routing** — watch any chat, deliver to any recipient
-- **Domain-tuned prompting** — currently configured for football Q&A
-  (tested on Premier League and World Cup question sets); the system
-  prompt in `index.js` is easily swapped for any Q&A domain
+- **Multiple chats** — watches any number of groups (comma-separated
+  config), with per-group tagging on delivered answers
+- **Remote control** — pause, resume, and query the agent from WhatsApp
+  itself; no server access needed day-to-day
+- **Self-improving** — learns corrections three ways: manual commands,
+  and automatically from the chat's own answer reveals (see Learning)
+- **Domain-tuned prompting** — currently configured for football Q&A;
+  the system prompt in `prompt.js` is easily swapped for any Q&A domain
 
 ## Architecture
 
 ```
-WhatsApp chat ──> Baileys listener ──> question filter ──> Claude API
-                                                                │
-              recipient DM  <── notification relay <────────────┘
+                        ┌─────────────────────────────────────────────┐
+                        │                 VPS (pm2)                   │
+WhatsApp groups ──────> │  Baileys socket ──> filters ──> Claude API  │
+                        │       │                │        (Haiku 4.5) │
+                        │       │          corrections.json           │
+                        │       │           (learning store)          │
+                        └───────┼─────────────────────────────────────┘
+                                v
+                        recipient DM (answers, notifications, commands)
 ```
 
-The listener stays read-only in the watched chat — answers are delivered
-out-of-band to the configured recipient.
+- **WhatsApp layer**: [Baileys](https://github.com/WhiskeySockets/Baileys)
+  speaks the WhatsApp Web protocol over a WebSocket — no browser, ~100 MB
+  RAM footprint, resilient to WhatsApp Web UI changes.
+- **Group filtering**: groups are recognized lazily from incoming
+  messages (name match against `WATCH_GROUP_NAMES`), so the agent works
+  even when chat-list syncing is unavailable.
+- **Identity handling**: WhatsApp increasingly addresses chats with
+  privacy LIDs instead of phone numbers. The agent resolves the
+  recipient's LID at startup and accepts commands from (and delivers to)
+  either identity.
+- **Answer path**: messages that pass the filters go to Claude with a
+  domain-tuned system prompt plus any saved corrections; `SKIP` responses
+  (chit-chat) are dropped, answers are DM'd to the recipient with the
+  source group tagged.
+- **Learning store**: `corrections.json` persists question→answer pairs.
+  Exact repeats are answered from memory with zero API latency (tagged 📌);
+  reworded repeats are handled by injecting corrections into the prompt.
 
 ## Stack
 
 - [Baileys](https://github.com/WhiskeySockets/Baileys) — WhatsApp Web
   protocol client (Node.js, WebSocket-based — no browser)
 - Anthropic Claude API (Haiku 4.5) — fast multimodal inference
-- Node.js
+- Node.js, [pm2](https://pm2.keymetrics.io/) for process management in
+  production
 
-## Setup
+## Setup (local)
 
 1. **Install Node.js** (v18+) from https://nodejs.org
 
@@ -65,10 +91,22 @@ out-of-band to the configured recipient.
    saved in `./baileys-session`, so you only scan once.
 
 The agent DMs the recipient a startup confirmation when it's watching.
-Health check: send `ping` to the agent's number from any chat — it
-replies `pong`.
 
-To run it 24/7 on a server instead of a laptop, see [DEPLOY.md](DEPLOY.md).
+## Deployment (24/7)
+
+The agent is designed to run unattended on a small Linux server so
+answers arrive regardless of whether any personal machine is on:
+
+- **Host**: any ~$5/month VPS (Hetzner, DigitalOcean, Lightsail) or a
+  free-tier cloud VM. No browser means minimal RAM requirements.
+- **Process management**: pm2 keeps the agent alive through crashes and
+  reboots (`pm2 start index.js --name qa-agent`, `pm2 save`, `pm2 startup`).
+- **Session**: the WhatsApp link (one QR scan, done over SSH) persists in
+  `baileys-session/` on the server.
+- **Updates**: `git pull && pm2 restart qa-agent` — the repo is the
+  deployment artifact.
+
+Step-by-step instructions: [DEPLOY.md](DEPLOY.md).
 
 ## Owner commands (DM the agent from the recipient number)
 
