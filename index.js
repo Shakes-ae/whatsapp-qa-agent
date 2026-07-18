@@ -31,14 +31,60 @@ const logger = pino({ level: "silent" });
 const groupNames = new Map(); // group jid -> subject (confirmed matches)
 const ignoredGroups = new Set(); // group jids checked and not matched
 
+let paused = false; // toggled by owner DM: stop/start
+
+// Per-group state for learning from the quizmaster's answer reveals
+const groupStates = new Map(); // jid -> { lastQ: {text, ts, botAnswer}, recent: [{sender, text, ts}] }
+const CONFIRM_RE = /✅|✔️|☑️|\bcorrect\b/i;
+
+function groupState(jid) {
+  let s = groupStates.get(jid);
+  if (!s) {
+    s = { lastQ: null, recent: [] };
+    groupStates.set(jid, s);
+  }
+  return s;
+}
+
+function normLite(s) {
+  return s.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
 function extractText(m) {
   const msg = m.message;
   return (msg.conversation || msg.extendedTextMessage?.text || msg.imageMessage?.caption || "").trim();
 }
 
 async function handleOwnerCommand(sock, m, text) {
-  if (text.toLowerCase() === "ping") {
+  const lower = text.toLowerCase();
+
+  if (lower === "ping") {
     await sock.sendMessage(ownerJid, { text: "pong 🏓" });
+    return;
+  }
+
+  if (["stop", "pause", "off"].includes(lower)) {
+    paused = true;
+    await sock.sendMessage(ownerJid, {
+      text: "⏸️ Paused — no more answer DMs. I'm still watching the groups and learning from revealed answers. Send *start* to resume.",
+    });
+    return;
+  }
+
+  if (["start", "resume", "on"].includes(lower)) {
+    paused = false;
+    await sock.sendMessage(ownerJid, { text: "▶️ Resumed — answers are back on." });
+    return;
+  }
+
+  if (lower === "status") {
+    const groups = [...groupNames.values()];
+    await sock.sendMessage(ownerJid, {
+      text:
+        `${paused ? "⏸️ Paused" : "▶️ Running"}\n` +
+        `Groups: ${groups.length ? groups.join(", ") : `waiting for messages matching: ${watchTargets.join(", ")}`}\n` +
+        `Corrections saved: ${count()}`,
+    });
     return;
   }
 
@@ -92,8 +138,52 @@ async function handleGroupMessage(sock, m, jid) {
 
   const text = extractText(m);
   const hasImage = !!m.message.imageMessage;
+  const state = groupState(jid);
+  const sender = m.key.participant || "";
+
+  // Keep a small rolling buffer of who said what (for tag-based reveal lookup)
+  if (text) {
+    state.recent.push({ sender, text, ts: Date.now() });
+    if (state.recent.length > 30) state.recent.shift();
+  }
+
+  // Answer reveal? (✅/✔️/☑️ or "correct" shortly after a question) — learn from
+  // it even while paused, then stop: reveals are never questions to answer.
+  if (text && CONFIRM_RE.test(text) && state.lastQ && Date.now() - state.lastQ.ts < 10 * 60_000) {
+    const ctx = m.message.extendedTextMessage?.contextInfo;
+    const quoted = ctx?.quotedMessage;
+    let winner = (quoted?.conversation || quoted?.extendedTextMessage?.text || "").trim();
+    if (!winner && ctx?.mentionedJid?.length) {
+      const entry = [...state.recent]
+        .reverse()
+        .find((e) => ctx.mentionedJid.includes(e.sender) && e.ts >= state.lastQ.ts && e.text !== state.lastQ.text);
+      winner = entry ? entry.text : "";
+    }
+    if (winner && winner !== state.lastQ.text && winner.length <= 200 && !winner.includes("?")) {
+      addCorrection(state.lastQ.text, winner);
+      const bot = state.lastQ.botAnswer;
+      const agrees = bot && (normLite(bot).includes(normLite(winner)) || normLite(winner).includes(normLite(bot)));
+      console.log(`  [learned] "${state.lastQ.text.slice(0, 60)}" -> "${winner.slice(0, 60)}"`);
+      if (bot && !agrees) {
+        await sock.sendMessage(ownerJid, {
+          text: `📚 The group confirmed a different answer:\n*Q:* ${state.lastQ.text.slice(0, 120)}\n*Right answer:* ${winner}\n_Saved — I'll use it next time._`,
+        });
+      }
+      state.lastQ = null; // consumed
+      return;
+    }
+  }
+
   if (!text && !hasImage) return;
   if (text.length < 8 && !hasImage) return; // skip "lol", "nice", emoji reactions
+
+  // Track the latest question so a later reveal can be paired with it
+  // (heuristic while paused; overwritten with the bot's answer when running)
+  if (text.includes("?") || hasImage) {
+    state.lastQ = { text: text || "(image question)", ts: Date.now(), botAnswer: null };
+  }
+
+  if (paused) return;
 
   const started = Date.now();
   console.log(`[${groupName}] ${text.slice(0, 80) || "(image)"}`);
@@ -101,6 +191,7 @@ async function handleGroupMessage(sock, m, jid) {
   // Repeated question with a saved correction: answer instantly from memory
   const known = text ? findCorrection(text) : null;
   if (known) {
+    state.lastQ = { text, ts: started, botAnswer: known.answer };
     await sock.sendMessage(ownerJid, {
       text: `⚽ _${groupName}_\n*Q:* ${text.slice(0, 120)}\n\n✅ *A:* ${known.answer} 📌`,
     });
@@ -147,6 +238,8 @@ async function handleGroupMessage(sock, m, jid) {
       console.log(`  -> skipped (${elapsed}s)`);
       return;
     }
+
+    state.lastQ = { text: text || "(image question)", ts: started, botAnswer: answer };
 
     const lateTag = Date.now() - started > 10_000 ? " ⏰ _(late)_" : "";
     await sock.sendMessage(ownerJid, {

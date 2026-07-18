@@ -70,13 +70,27 @@ replies `pong`.
 
 To run it 24/7 on a server instead of a laptop, see [DEPLOY.md](DEPLOY.md).
 
-## Teaching it corrections
+## Owner commands (DM the agent from the recipient number)
 
-The agent learns from its mistakes. From the recipient's phone:
+| Command | Effect |
+|---|---|
+| `stop` / `pause` | Pause answer DMs (the agent keeps watching and learning) |
+| `start` / `resume` | Resume answering |
+| `status` | Running/paused, watched groups, corrections count |
+| `ping` | Health check — replies `pong` |
+| `correct: <answer>` (as a reply to an answer DM) | Fix a wrong answer |
+| `learn: <question> = <answer>` | Teach proactively |
 
-- **Fix a wrong answer**: reply to the agent's ⚽ answer DM with
-  `correct: <right answer>`
-- **Teach proactively**: DM the agent `learn: <question> = <answer>`
+## Learning
+
+The agent learns from its mistakes three ways:
+
+- **Manual corrections** — the `correct:` and `learn:` commands above.
+- **Automatic, from the chat itself** — when a message containing ✅/✔️/☑️ or
+  the word "correct" appears within 10 minutes of a question, the agent
+  extracts the winning answer (from the message it replies to, or the tagged
+  person's latest answer) and saves it. If that differs from what the agent
+  answered, it notifies the recipient.
 
 Corrections persist in `corrections.json`. When a saved question repeats
 exactly, the agent answers instantly from memory (tagged 📌, no API call);
